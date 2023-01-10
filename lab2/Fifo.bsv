@@ -11,25 +11,35 @@ endinterface
 
 
 
-module mkFifo(Fifo#(3,t)) provisos (Bits#(t,tSz));
+module mkFifo(Fifo#(n,t)) provisos (Bits#(t,tSz));
    // define your own 3-elements fifo here.     
-    Reg#(Maybe#(t)) d[3];
-    for(Integer i = 0; i < 3; i = i + 1) begin
+    Reg#(Maybe#(t)) d[n];
+    for(Integer i = 0; i < valueOf(n); i = i + 1) begin
         d[i] <- mkReg(tagged Invalid);
     end
     
    // Enq if there's at least one spot open... so, dc is invalid. 
-   method Action enq(t x) if (!isValid (d[2]));
-        if (!isValid (d[0])) begin d[0] <= tagged Valid (x); end
-        else if (!isValid (d[1])) begin d[1] <= tagged Valid (x); end
-        else begin d[2] <= tagged Valid (x); end
+   method Action enq(t x) if (!isValid (d[valueOf(n)-1]));
+    for(Integer i = 0; i < valueOf(n); i = i + 1) begin     
+        if(!isValid (d[i])) begin 
+            d[i] <= tagged Valid(x); 
+            // break; 
+        end
+    end
    endmethod
 
    //Deq if there's a valid d[0]ta at d[0]
    method Action deq() if (isValid (d[0]));
-        if (isValid (d[2])) begin d[0] <= d[1]; d[1] <= d[2]; d[2] <= tagged Invalid; end
-        else if (isValid (d[1])) begin d[0] <= d[1]; d[1] <= tagged Invalid; end
-        else begin d[0] <= tagged Invalid; end
+    for(Integer i = valueOf(n) - 1; i >= 0; i = i - 1) begin
+        if(isValid (d[i])) begin
+            for(Integer j = 0; j < i; j = j - 1) begin
+                d[j] <= d[j+1];
+            end
+        end
+        d[i] <= tagged Invalid;
+        // break;
+    end
+
    endmethod
 
    //First if there's a valid data at d[0]
