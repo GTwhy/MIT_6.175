@@ -25,11 +25,11 @@ module mkProc(Proc);
     CsrFile  csrf <- mkCsrFile;
 
     Bool memReady = iMem.init.done() && dMem.init.done();
-    rule test (!memReady);
-	let e = tagged InitDone;
-	iMem.init.request.put(e);
-	dMem.init.request.put(e);
-    endrule
+    // rule test (!memReady);
+	// let e = tagged InitDone;
+	// iMem.init.request.put(e);
+	// dMem.init.request.put(e);
+    // endrule
     rule doProc(csrf.started);
         Data inst = iMem.req(pc);
 
@@ -59,7 +59,7 @@ module mkProc(Proc);
 
         // trace - print the instruction
         $display("pc: %h inst: (%h) expanded: ", pc, inst, showInst(inst));
-	$fflush(stdout);
+	    $fflush(stdout);
 
         // check unsupported instruction at commit time. Exiting
         if(eInst.iType == Unsupported) begin
@@ -116,8 +116,8 @@ module mkProc(Proc);
 
     method Action hostToCpu(Bit#(32) startpc) if ( !csrf.started && memReady );
         csrf.start(0); // only 1 core, id = 0
-	$display("Start at pc 200\n");
-	$fflush(stdout);
+	    $display("Start at pc %h\n", startpc);
+	    $fflush(stdout);
         pc <= startpc;
     endmethod
 

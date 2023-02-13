@@ -1,23 +1,40 @@
 #!/bin/bash
 
+
 asm_tests=(
-	median
-	multiply
-	qsort
-	towers
-	vvadd
+	simple
+	add addi
+	and andi
+	auipc
+	beq bge bgeu blt bltu bne
+	j jal jalr
+	lw
+	lui
+	or ori
+	sw
+	sll slli
+	slt slti
+	sra srai
+	srl srli
+	sub
+	xor xori
+	bpred_bht bpred_j bpred_ras
+	cache
 	)
 
-vmh_dir=programs/build/benchmarks/vmh
+vmh_dir=../programs/build/assembly/vmh
 log_dir=logs
 wait_time=3
 
 # create bsim log dir
 mkdir -p ${log_dir}
 
+# kill previous bsim if any
+pkill bluetcl
+
 # run each test
 for test_name in ${asm_tests[@]}; do
-	echo "-- benchmark test: ${test_name} --"
+	echo "-- assembly test: ${test_name} --"
 	# copy vmh file
 	mem_file=${vmh_dir}/${test_name}.riscv.vmh
 	if [ ! -f $mem_file ]; then
@@ -28,5 +45,6 @@ for test_name in ${asm_tests[@]}; do
 
 	# run test
 	make run.bluesim > ${log_dir}/${test_name}.log & # run bsim, redirect outputs to log
-	sleep ${wait_time} # wait for bsim to setup
+	sleep ${wait_time}
+	echo ""
 done

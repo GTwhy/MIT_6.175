@@ -27,8 +27,10 @@ endinterface
 
 module mkDelayedMemory(DelayedMemory);
     Fifo#(2, MemResp) outFifo <- mkCFFifo();
-	RegFile#(Bit#(16), Data) mem <- mkRegFileFullLoad("mem.vmh");
-	MemInitIfc memInit <- mkDummyMemInit;
+	// RegFile#(Bit#(16), Data) mem <- mkRegFileFullLoad("mem.vmh");
+	// MemInitIfc memInit <- mkDummyMemInit;
+    RegFile#(Bit#(16), Data) mem <- mkRegFileFull();
+    MemInitIfc memInit <- mkMemInitRegFile(mem);
 
     method Action req(MemReq r) if (memInit.done());
         Bit#(16) index = truncate(r.addr>>2);

@@ -22,7 +22,7 @@ asm_tests=(
 	cache
 	)
 
-vmh_dir=programs/build/assembly/vmh
+vmh_dir=../programs/build/assembly/vmh
 log_dir=logs
 wait_time=3
 
