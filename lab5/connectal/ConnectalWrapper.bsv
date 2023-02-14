@@ -50,7 +50,7 @@ import Ifc::*;
 import ProcTypes::*;
 import Types::*;
 import Ehr::*;
-import MemTypes::*;
+import CMemTypes::*;
 import GetPut::*;
 
 // Connectal imports

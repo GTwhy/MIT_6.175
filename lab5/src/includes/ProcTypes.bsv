@@ -60,7 +60,7 @@ Opcode opSystem  = 7'b1110011;
 typedef Bit#(12) CsrIndx;
 CsrIndx csrInstret = 12'hc02;
 CsrIndx csrCycle   = 12'hc00;
-CsrIndx csrMhartid = 12'hf10;
+CsrIndx csrMhartid = 12'hf14;
 CsrIndx csrMtohost = 12'h7a8;
 
 // LR, SC, FENCE not implemented
