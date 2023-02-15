@@ -12,9 +12,15 @@ import Decode::*;
 import Exec::*;
 import CsrFile::*;
 import Vector::*;
-import Fifo::*;
+import FIFO::*;
 import Ehr::*;
 import GetPut::*;
+
+
+typedef enum {
+    Fetch,
+    Execute
+} Stage deriving(Bits, Eq, FShow);
 
 (* synthesize *)
 module mkProc(Proc);
@@ -23,23 +29,25 @@ module mkProc(Proc);
     DMemory mem <- mkDMemory;
 	let dummyInit <- mkDummyMemInit;
     CsrFile csrf <- mkCsrFile;
-    Reg#(Maybe#(DecodedInst)) f2e <- mkReg(tagged Invalid);
+    FIFO#(DecodedInst) f2e <- mkFIFO;
+    Reg#(Stage) stage <- mkReg(Fetch);
     Bool memReady = mem.init.done && dummyInit.done;
 
     // In the instruction fetch stage, the processor reads the current instruction from the 
     // memory and decodes it.
-    rule fetch(csrf.started && !isValid(f2e));
+    rule fetch(csrf.started && stage == Fetch);
         Data inst <- mem.req(MemReq{op: Ld, addr: pc, data: ?});
-        
         $display("pc: %h inst: (%h) expanded: ", pc, inst, showInst(inst));
         $fflush(stdout);
-        f2e <= tagged Valid decode(inst);
+        f2e.enq(decode(inst));
+        stage <= Execute;
     endrule
     
     // In the execute stage, the processor Reads the register file, executes instructions, 
     // does ALU operations, does memory operations, and writes the result to the register file.
-    rule exec(csrf.started && isValid(f2e));
-        let dInst = fromMaybe(?, f2e);
+    rule exec(csrf.started && stage == Execute);
+        let dInst = f2e.first;
+        f2e.deq;
 
         Data rVal1 = rf.rd1(fromMaybe(?, dInst.src1));
         Data rVal2 = rf.rd2(fromMaybe(?, dInst.src2));
@@ -66,7 +74,7 @@ module mkProc(Proc);
 
         csrf.wr(eInst.iType == Csrw? eInst.csr : Invalid, eInst.data);
 
-        f2e <= tagged Invalid;
+        stage <= Fetch;
     endrule
 
     method ActionValue#(CpuToHostData) cpuToHost;
