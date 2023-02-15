@@ -39,7 +39,7 @@ bmarks_host = \
 HOST_OPTS = -std=gnu99 -DPREALLOCATE=0 -DHOST_DEBUG=1 -I$(bmarkdir)/common
 HOST_COMP = gcc $(HOST_OPTS)
 
-RISCV_TOOL_DIR = $(abspath ../../../../riscv/bin)
+RISCV_TOOL_DIR = /home/hengyu/tools/riscv32-unknown-toolchain/bin
 RISCV_PREFIX = $(RISCV_TOOL_DIR)/riscv32-unknown-elf
 # gcc
 RISCV_GCC = $(RISCV_PREFIX)-gcc
