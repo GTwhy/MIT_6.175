@@ -22,7 +22,7 @@ asm_tests=(
 	cache
 	)
 
-vmh_dir=../programs/build/assembly/vmh
+vmh_dir=../programs/build/assembly/bin
 log_dir=logs
 wait_time=3
 
@@ -37,12 +37,12 @@ pkill bsim
 for test_name in ${asm_tests[@]}; do
 	echo "-- assembly test: ${test_name} --"
 	# copy vmh file
-	mem_file=${vmh_dir}/${test_name}.riscv.vmh
+	mem_file=${vmh_dir}/${test_name}.riscv
 	if [ ! -f $mem_file ]; then
 		echo "ERROR: $mem_file does not exit, you need to first compile"
 		exit
 	fi
-	cp ${mem_file} bluesim/mem.vmh 
+	cp ${mem_file} bluesim/program
 
 	# run test
 	make run.bluesim > ${log_dir}/${test_name}.log & # run bsim, redirect outputs to log
