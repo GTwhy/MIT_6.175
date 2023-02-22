@@ -60,7 +60,7 @@ typedef struct {
 (* synthesize *)
 module mkProc(Proc);
     Ehr#(2, Addr) pcReg <- mkEhr(?);
-    RFile            rf <- mkBypassRFile;
+    RFile            rf <- mkRFile;
 	Scoreboard#(6)   sb <- mkBypassScoreboard;
 	FPGAMemory     iMem <- mkFPGAMemory;
     FPGAMemory     dMem <- mkFPGAMemory;
@@ -70,17 +70,18 @@ module mkProc(Proc);
     Btb#(6)         btb <- mkBtb; // 64-entry BTB
 
 	// global epoch for redirection from Execute stage
-	Reg#(Bool) exeEpoch <- mkReg(False);
+	// Reg#(Bool) exeEpoch <- mkReg(False);
+	Ehr#(2, Bool) exeEpoch <- mkEhr(False);
+
 
 	// EHR for redirection
 	Ehr#(2, Maybe#(ExeRedirect)) exeRedirect <- mkEhr(Invalid);
 
-	// FIFO between two stages
-	Fifo#(2, Fetch2Decode) f2dFifo <- mkCFFifo;
-	Fifo#(2, Decode2Register) d2rFifo <- mkCFFifo;
-	Fifo#(2, Register2Execute) r2eFifo <- mkCFFifo;
-	Fifo#(2, Execute2Memory) e2mFifo <- mkCFFifo;
-	Fifo#(2, Memory2WriteBack) m2wFifo <- mkCFFifo;
+	Fifo#(2, Fetch2Decode) f2dFifo <- mkBypassFifo;
+	Fifo#(2, Decode2Register) d2rFifo <- mkBypassFifo;
+	Fifo#(2, Register2Execute) r2eFifo <- mkBypassFifo;
+	Fifo#(2, Execute2Memory) e2mFifo <- mkBypassFifo;
+	Fifo#(2, Memory2WriteBack) m2wFifo <- mkBypassFifo;
 
     Bool memReady = iMem.init.done && dMem.init.done;
 
@@ -96,7 +97,7 @@ module mkProc(Proc);
         let f2d = Fetch2Decode {
             pc: pcReg[0],
             predPc: predPc,
-            epoch: exeEpoch
+            epoch: exeEpoch[0]
         };
         f2dFifo.enq(f2d);
         $display("doFetch: PC = %x", f2d.pc);
@@ -159,10 +160,10 @@ module mkProc(Proc);
 
         Maybe#(ExecInst) newEInst = Invalid;
 
-		if(r2e.epoch != exeEpoch) begin
+		if(r2e.epoch != exeEpoch[1]) begin
 			// kill wrong-path inst, just deq sb
 			// sb.remove;
-			// $display("Execute: Kill instruction at pc: %x.\n", r2e.pc);
+			$display("Execute: Kill instruction at pc: %x.\n", r2e.pc);
 		end else begin
 			// execute
 			let eInst = exec(r2e.dInst, r2e.rVal1, r2e.rVal2, r2e.pc, r2e.predPc, r2e.csrVal);
@@ -171,18 +172,14 @@ module mkProc(Proc);
                 $fwrite(stderr, "ERROR: Executing unsupported instruction at pc: %x. Exiting\n", r2e.pc);
                 $finish;
             end
+
             newEInst = Valid(eInst);
-            // check mispred: with proper BTB, it is only possible for branch/jump inst 
-            //under ppc = pc, there will be mispredictions for non-branch/jump insts..
-            //this btb must be letting them redirect tho .. 
-            //when the instruction that caused the misdirection is a store, the memory address for the store is set as next pc
-            //unsuported instruction ensues...
+            
             if (eInst.mispredict) begin
                 $display("Execute finds misprediction: PC = %x", r2e.pc);
-                exeRedirect[0] <= Valid (ExeRedirect {
-                    pc: r2e.pc,
-                    nextPc: eInst.addr
-                });
+                pcReg[1] <= eInst.addr;
+    			exeEpoch[1] <= !exeEpoch[1]; // flip epoch
+	    		btb.update(r2e.pc, eInst.addr); // train BTB
             end else begin
                 $display("Execute: PC = %x", r2e.pc);
             end
@@ -243,19 +240,19 @@ module mkProc(Proc);
 	endrule
 
     
-	(* fire_when_enabled *)
-	(* no_implicit_conditions *)
-	rule cononicalizeRedirect(csrf.started);
-		if(exeRedirect[1] matches tagged Valid .r) begin
-			// fix mispred
-			pcReg[1] <= r.nextPc;
-			exeEpoch <= !exeEpoch; // flip epoch
-			btb.update(r.pc, r.nextPc); // train BTB
-			$display("cononicalizeRedirect Fetch: Mispredict, redirected by Execute");
-		end
-		// reset EHR
-		exeRedirect[1] <= Invalid;
-	endrule
+	// (* fire_when_enabled *)
+	// (* no_implicit_conditions *)
+	// rule cononicalizeRedirect(csrf.started);
+	// 	if(exeRedirect[1] matches tagged Valid .r) begin
+	// 		// fix mispred
+	// 		pcReg[1] <= r.nextPc;
+	// 		exeEpoch <= !exeEpoch; // flip epoch
+	// 		btb.update(r.pc, r.nextPc); // train BTB
+	// 		$display("cononicalizeRedirect Fetch: Mispredict, redirected by Execute");
+	// 	end
+	// 	// reset EHR
+	// 	exeRedirect[1] <= Invalid;
+	// endrule
     
 
     method ActionValue#(CpuToHostData) cpuToHost if(csrf.started);
