@@ -8,6 +8,14 @@ asm_tests=(
 	vvadd
 	)
 
+# asm_tests=(		#dump	  log_isnt 
+# 	median 		#20a0006f 1c20006f
+# 	multiply 	#1c20006f 2ce0006f
+# 	qsort 		#2ce0006f 5d20006f
+# 	towers 		#5d20006f 1c20006f
+# 	vvadd 		#1c20006f 1c20006f
+# 	)
+
 vmh_dir=../programs/build/benchmarks/bin
 log_dir=logs
 wait_time=3
