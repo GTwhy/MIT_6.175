@@ -64,15 +64,11 @@ module mkProc(Proc);
 	Scoreboard#(6)   sb <- mkBypassScoreboard;
 	FPGAMemory     iMem <- mkFPGAMemory;
     FPGAMemory     dMem <- mkFPGAMemory;
-    // DelayedMemory   iMem <- mkDelayedMemory;
-    // DelayedMemory   dMem <- mkDelayedMemory;
     CsrFile        csrf <- mkCsrFile;
     Btb#(6)         btb <- mkBtb; // 64-entry BTB
 
 	// global epoch for redirection from Execute stage
-	// Reg#(Bool) exeEpoch <- mkReg(False);
-	Ehr#(2, Bool) exeEpoch <- mkEhr(False);
-
+	Reg#(Bool) exeEpoch <- mkReg(False);
 
 	// EHR for redirection
 	Ehr#(2, Maybe#(ExeRedirect)) exeRedirect <- mkEhr(Invalid);
@@ -84,7 +80,6 @@ module mkProc(Proc);
 	Fifo#(2, Memory2WriteBack) m2wFifo <- mkBypassFifo;
 
     Bool memReady = iMem.init.done && dMem.init.done;
-
     
     // Instruction Fetch -- request instruction from iMem and update PC
 	// fetch, decode, reg read stage
@@ -97,7 +92,7 @@ module mkProc(Proc);
         let f2d = Fetch2Decode {
             pc: pcReg[0],
             predPc: predPc,
-            epoch: exeEpoch[0]
+            epoch: exeEpoch
         };
         f2dFifo.enq(f2d);
         $display("doFetch: PC = %x", f2d.pc);
@@ -160,7 +155,7 @@ module mkProc(Proc);
 
         Maybe#(ExecInst) newEInst = Invalid;
 
-		if(r2e.epoch != exeEpoch[1]) begin
+		if(r2e.epoch != exeEpoch) begin
 			// kill wrong-path inst, just deq sb
 			// sb.remove;
 			$display("Execute: Kill instruction at pc: %x.\n", r2e.pc);
@@ -178,7 +173,7 @@ module mkProc(Proc);
             if (eInst.mispredict) begin
                 $display("Execute finds misprediction: PC = %x", r2e.pc);
                 pcReg[1] <= eInst.addr;
-    			exeEpoch[1] <= !exeEpoch[1]; // flip epoch
+    			exeEpoch <= !exeEpoch; // flip epoch
 	    		btb.update(r2e.pc, eInst.addr); // train BTB
             end else begin
                 $display("Execute: PC = %x", r2e.pc);
@@ -238,22 +233,6 @@ module mkProc(Proc);
         // remove from scoreboard
         sb.remove;
 	endrule
-
-    
-	// (* fire_when_enabled *)
-	// (* no_implicit_conditions *)
-	// rule cononicalizeRedirect(csrf.started);
-	// 	if(exeRedirect[1] matches tagged Valid .r) begin
-	// 		// fix mispred
-	// 		pcReg[1] <= r.nextPc;
-	// 		exeEpoch <= !exeEpoch; // flip epoch
-	// 		btb.update(r.pc, r.nextPc); // train BTB
-	// 		$display("cononicalizeRedirect Fetch: Mispredict, redirected by Execute");
-	// 	end
-	// 	// reset EHR
-	// 	exeRedirect[1] <= Invalid;
-	// endrule
-    
 
     method ActionValue#(CpuToHostData) cpuToHost if(csrf.started);
         let ret <- csrf.cpuToHost;
