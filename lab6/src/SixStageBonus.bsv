@@ -24,6 +24,7 @@ typedef struct {
     Addr predPc;
     Bool decEpoch;
     Bool exeEpoch;
+    Bool regEpoch;
 } Fetch2Decode deriving (Bits, Eq);
 
 typedef struct {
@@ -31,6 +32,7 @@ typedef struct {
     Addr predPc;
     DecodedInst dInst;
     Bool exeEpoch;
+    Bool regEpoch;
 } Decode2Register deriving (Bits, Eq);
 
 typedef struct {
@@ -61,9 +63,11 @@ typedef struct {
 
 (* synthesize *)
 module mkProc(Proc);
-    Ehr#(3, Addr) pcReg <- mkEhr(?);
-    RFile            rf <- mkRFile;
-	Scoreboard#(6)   sb <- mkBypassScoreboard;
+    Ehr#(4, Addr) pcReg <- mkEhr(?);
+    RFile            rf <- mkBypassRFile;
+	Scoreboard#(6)   sb <- mkPipelineScoreboard;
+    // RFile            rf <- mkBypassRFile;
+	// Scoreboard#(6)   sb <- mkPipelineScoreboard;
 	FPGAMemory     iMem <- mkFPGAMemory;
     FPGAMemory     dMem <- mkFPGAMemory;
     CsrFile        csrf <- mkCsrFile;
@@ -73,19 +77,26 @@ module mkProc(Proc);
 	// global epoch for redirection from Execute stage
 	Reg#(Bool) exeEpoch <- mkReg(False);
     Reg#(Bool) decEpoch <- mkReg(False);
+    Reg#(Bool) regEpoch <- mkReg(False);
 
 	// EHR for redirection
 	Ehr#(3, Maybe#(ExeRedirect)) exeRedirect <- mkEhr(Invalid);
 
-	Fifo#(2, Fetch2Decode) f2dFifo <- mkBypassFifo;
-	Fifo#(2, Decode2Register) d2rFifo <- mkBypassFifo;
-	Fifo#(2, Register2Execute) r2eFifo <- mkBypassFifo;
-	Fifo#(2, Execute2Memory) e2mFifo <- mkBypassFifo;
-	Fifo#(2, Memory2WriteBack) m2wFifo <- mkBypassFifo;
+	// Fifo#(2, Fetch2Decode) f2dFifo <- mkBypassFifo;
+	// Fifo#(2, Decode2Register) d2rFifo <- mkBypassFifo;
+	// Fifo#(2, Register2Execute) r2eFifo <- mkBypassFifo;
+	// Fifo#(2, Execute2Memory) e2mFifo <- mkBypassFifo;
+	// Fifo#(2, Memory2WriteBack) m2wFifo <- mkBypassFifo;
+
+	Fifo#(2, Fetch2Decode) f2dFifo <- mkCFFifo;
+	Fifo#(2, Decode2Register) d2rFifo <- mkCFFifo;
+	Fifo#(2, Register2Execute) r2eFifo <- mkCFFifo;
+	Fifo#(2, Execute2Memory) e2mFifo <- mkCFFifo;
+	Fifo#(2, Memory2WriteBack) m2wFifo <- mkCFFifo;
 
     Bool memReady = iMem.init.done && dMem.init.done;
     
-    function Bool isBranch(IType iType) = (iType == J || iType == Br);
+    function Addr getTargetPc(Data val, Maybe#(Data) imm) = {truncateLSB(val + fromMaybe(?, imm)), 1'b0};
 
     // Instruction Fetch -- request instruction from iMem and update PC
 	// fetch, decode, reg read stage
@@ -99,7 +110,8 @@ module mkProc(Proc);
             pc: pcReg[0],
             predPc: predPc,
             decEpoch: decEpoch,
-            exeEpoch: exeEpoch
+            exeEpoch: exeEpoch,
+            regEpoch: regEpoch
         };
         f2dFifo.enq(f2d);
         $display("doFetch: PC = %x", f2d.pc);
@@ -112,13 +124,13 @@ module mkProc(Proc);
         
         let inst <- iMem.resp;
 
-        if ( f2d.decEpoch != decEpoch || f2d.exeEpoch != exeEpoch) begin
+        if ( f2d.decEpoch != decEpoch || f2d.regEpoch != regEpoch || f2d.exeEpoch != exeEpoch) begin
             $display("doDecode and killed inst with wrong epoch: PC = %x, inst = %x, expanded = ", f2d.pc, inst, showInst(inst));
         end else begin
             // decode
             DecodedInst dInst = decode(inst);
 
-            let ppc = isBranch(dInst.iType)? bht.predPc(f2d.pc, f2d.pc + fromMaybe(?, dInst.imm)) : f2d.predPc;
+            let ppc = dInst.iType == Br? bht.predPc(f2d.pc, f2d.pc + fromMaybe(?, dInst.imm)) : f2d.predPc;
             
             if ( f2d.predPc != ppc ) begin
                 decEpoch <= !decEpoch;
@@ -130,7 +142,9 @@ module mkProc(Proc);
                 pc: f2d.pc,
                 predPc: ppc,
                 dInst: dInst,
-                exeEpoch: f2d.exeEpoch
+                exeEpoch: f2d.exeEpoch,
+                // regEpoch: regEpoch // bug
+                regEpoch: f2d.regEpoch
             };
 
             d2rFifo.enq(d2r);
@@ -148,25 +162,38 @@ module mkProc(Proc);
 		Data rVal2 = rf.rd2(fromMaybe(?, dInst.src2));
 		Data csrVal = csrf.rd(fromMaybe(?, dInst.csr));
 
-		let r2e = Register2Execute {
-			pc: d2r.pc,
-			predPc: d2r.predPc,
-			dInst: d2r.dInst,
-			rVal1: rVal1,
-			rVal2: rVal2,
-			csrVal: csrVal,
-			exeEpoch: d2r.exeEpoch
-		};
-		// search scoreboard to determine stall
-		if(!sb.search1(dInst.src1) && !sb.search2(dInst.src2)) begin
-			// enq & update PC, sb
-			r2eFifo.enq(r2e);
-			sb.insert(dInst.dst);
+        if ( d2r.regEpoch != regEpoch || d2r.exeEpoch != exeEpoch ) begin
             d2rFifo.deq;
-			$display("Register Fetch: PC = %x", d2r.pc);
-		end else begin
-			$display("Register Fetch Stalled: PC = %x", d2r.pc);
-		end
+			$display("Register Fetch and killed inst with wrong epoch: PC = %x", d2r.pc);
+        end else begin
+            let ppc = (d2r.dInst.iType == Jr)? bht.predPc(d2r.pc, getTargetPc(rVal1, dInst.imm)) : d2r.predPc;
+
+            if ( ppc != d2r.predPc ) begin
+                regEpoch <= !regEpoch;
+                pcReg[2] <= ppc;
+                $display("RegisterFetch and PC redirect by BHT: PC = %x, PPC = %x", d2r.pc, ppc);
+            end
+
+            let r2e = Register2Execute {
+                pc: d2r.pc,
+                predPc: ppc,
+                dInst: d2r.dInst,
+                rVal1: rVal1,
+                rVal2: rVal2,
+                csrVal: csrVal,
+                exeEpoch: d2r.exeEpoch
+            };
+            // search scoreboard to determine stall
+            if(!sb.search1(dInst.src1) && !sb.search2(dInst.src2)) begin
+                // enq & update PC, sb
+                r2eFifo.enq(r2e);
+                sb.insert(dInst.dst);
+                d2rFifo.deq;
+                $display("Register Fetch: PC = %x", d2r.pc);
+            end else begin
+                $display("Register Fetch Stalled: PC = %x", d2r.pc);
+            end
+        end
 	endrule
 
     // Execute -- execute the instruction and redirect the processor if necessary    
@@ -190,15 +217,17 @@ module mkProc(Proc);
             newEInst = Valid(eInst);
             
             if (eInst.mispredict) begin
-                $display("Execute finds misprediction: PC = %x", r2e.pc);
-                pcReg[2] <= eInst.addr;
+                let jump = eInst.iType == J || eInst.iType == Jr || eInst.iType == Br;
+                let npc = jump? eInst.addr : r2e.pc+4;
+                pcReg[3] <= npc;
     			exeEpoch <= !exeEpoch; // flip epoch
 	    		btb.update(r2e.pc, eInst.addr); // train BTB
+                $display("Execute finds misprediction: PC = %x, misPC = %x, nextPC = %x", r2e.pc, r2e.predPc, npc);
             end else begin
                 $display("Execute: PC = %x", r2e.pc);
             end
 
-            if ( isBranch(eInst.iType)) bht.update(r2e.pc, eInst.brTaken);
+            if ( eInst.iType == Br) bht.update(r2e.pc, eInst.brTaken);
         end
         let e2m = Execute2Memory{
                 pc: r2e.pc,
