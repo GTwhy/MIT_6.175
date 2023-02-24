@@ -18,7 +18,7 @@ asm_tests=(
 
 vmh_dir=../programs/build/benchmarks/bin
 log_dir=logs
-wait_time=3
+# wait_time=3
 
 # create bsim log dir
 mkdir -p ${log_dir}
@@ -37,8 +37,8 @@ for test_name in ${asm_tests[@]}; do
 	cp ${mem_file} bluesim/program
 
 	# run test
-	make run.bluesim > ${log_dir}/${test_name}.log & # run bsim, redirect outputs to log
-	sleep ${wait_time} # wait for bsim to setup
+	make run.bluesim > ${log_dir}/${test_name}.log # run bsim, redirect outputs to log
+	# sleep ${wait_time} # wait for bsim to setup
 done
 pkill ubuntu.exe
 pkill bsim

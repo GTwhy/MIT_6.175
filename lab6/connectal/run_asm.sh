@@ -18,13 +18,13 @@ asm_tests=(
 	srl srli
 	sub
 	xor xori
-	bpred_bht bpred_j bpred_ras
+	bpred_bht bpred_j bpred_ras bpred_j_noloop
 	cache
 	)
 
 vmh_dir=../programs/build/assembly/bin
 log_dir=logs
-wait_time=3
+# wait_time=3
 
 # create bsim log dir
 mkdir -p ${log_dir}
@@ -45,9 +45,9 @@ for test_name in ${asm_tests[@]}; do
 	cp ${mem_file} bluesim/program
 
 	# run test
-	make run.bluesim > ${log_dir}/${test_name}.log & # run bsim, redirect outputs to log
-	sleep ${wait_time}
+	make run.bluesim > ${log_dir}/${test_name}.log # run bsim, redirect outputs to log
+	# sleep ${wait_time}
 	echo ""
 done
-pkill ubuntu.exe
-pkill bsim
+# pkill ubuntu.exe
+# pkill bsim
