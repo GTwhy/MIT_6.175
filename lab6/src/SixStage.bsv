@@ -60,8 +60,8 @@ typedef struct {
 (* synthesize *)
 module mkProc(Proc);
     Ehr#(2, Addr) pcReg <- mkEhr(?);
-    RFile            rf <- mkRFile;
-	Scoreboard#(6)   sb <- mkBypassScoreboard;
+    RFile            rf <- mkBypassRFile;
+	Scoreboard#(6)   sb <- mkPipelineScoreboard;
 	FPGAMemory     iMem <- mkFPGAMemory;
     FPGAMemory     dMem <- mkFPGAMemory;
     CsrFile        csrf <- mkCsrFile;
@@ -73,11 +73,17 @@ module mkProc(Proc);
 	// EHR for redirection
 	Ehr#(2, Maybe#(ExeRedirect)) exeRedirect <- mkEhr(Invalid);
 
-	Fifo#(2, Fetch2Decode) f2dFifo <- mkBypassFifo;
-	Fifo#(2, Decode2Register) d2rFifo <- mkBypassFifo;
-	Fifo#(2, Register2Execute) r2eFifo <- mkBypassFifo;
-	Fifo#(2, Execute2Memory) e2mFifo <- mkBypassFifo;
-	Fifo#(2, Memory2WriteBack) m2wFifo <- mkBypassFifo;
+	// Fifo#(2, Fetch2Decode) f2dFifo <- mkBypassFifo;
+	// Fifo#(2, Decode2Register) d2rFifo <- mkBypassFifo;
+	// Fifo#(2, Register2Execute) r2eFifo <- mkBypassFifo;
+	// Fifo#(2, Execute2Memory) e2mFifo <- mkBypassFifo;
+	// Fifo#(2, Memory2WriteBack) m2wFifo <- mkBypassFifo;
+
+	Fifo#(2, Fetch2Decode) f2dFifo <- mkCFFifo;
+	Fifo#(2, Decode2Register) d2rFifo <- mkCFFifo;
+	Fifo#(2, Register2Execute) r2eFifo <- mkCFFifo;
+	Fifo#(2, Execute2Memory) e2mFifo <- mkCFFifo;
+	Fifo#(2, Memory2WriteBack) m2wFifo <- mkCFFifo;
 
     Bool memReady = iMem.init.done && dMem.init.done;
     
@@ -172,7 +178,9 @@ module mkProc(Proc);
             
             if (eInst.mispredict) begin
                 $display("Execute finds misprediction: PC = %x", r2e.pc);
-                pcReg[1] <= eInst.addr;
+                let jump = eInst.iType == J || eInst.iType == Jr || eInst.iType == Br;
+                let ppc = jump? eInst.addr : r2e.pc+4;
+                pcReg[1] <= ppc;
     			exeEpoch <= !exeEpoch; // flip epoch
 	    		btb.update(r2e.pc, eInst.addr); // train BTB
             end else begin

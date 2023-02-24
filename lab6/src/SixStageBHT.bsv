@@ -62,8 +62,8 @@ typedef struct {
 (* synthesize *)
 module mkProc(Proc);
     Ehr#(3, Addr) pcReg <- mkEhr(?);
-    RFile            rf <- mkRFile;
-	Scoreboard#(6)   sb <- mkBypassScoreboard;
+    RFile            rf <- mkBypassRFile;
+	Scoreboard#(6)   sb <- mkPipelineScoreboard;
 	FPGAMemory     iMem <- mkFPGAMemory;
     FPGAMemory     dMem <- mkFPGAMemory;
     CsrFile        csrf <- mkCsrFile;
@@ -77,16 +77,20 @@ module mkProc(Proc);
 	// EHR for redirection
 	Ehr#(3, Maybe#(ExeRedirect)) exeRedirect <- mkEhr(Invalid);
 
-	Fifo#(2, Fetch2Decode) f2dFifo <- mkBypassFifo;
-	Fifo#(2, Decode2Register) d2rFifo <- mkBypassFifo;
-	Fifo#(2, Register2Execute) r2eFifo <- mkBypassFifo;
-	Fifo#(2, Execute2Memory) e2mFifo <- mkBypassFifo;
-	Fifo#(2, Memory2WriteBack) m2wFifo <- mkBypassFifo;
+	// Fifo#(2, Fetch2Decode) f2dFifo <- mkBypassFifo;
+	// Fifo#(2, Decode2Register) d2rFifo <- mkBypassFifo;
+	// Fifo#(2, Register2Execute) r2eFifo <- mkBypassFifo;
+	// Fifo#(2, Execute2Memory) e2mFifo <- mkBypassFifo;
+	// Fifo#(2, Memory2WriteBack) m2wFifo <- mkBypassFifo;
+
+	Fifo#(2, Fetch2Decode) f2dFifo <- mkCFFifo;
+	Fifo#(2, Decode2Register) d2rFifo <- mkCFFifo;
+	Fifo#(2, Register2Execute) r2eFifo <- mkCFFifo;
+	Fifo#(2, Execute2Memory) e2mFifo <- mkCFFifo;
+	Fifo#(2, Memory2WriteBack) m2wFifo <- mkCFFifo;
 
     Bool memReady = iMem.init.done && dMem.init.done;
     
-    function Bool isBranch(IType iType) = (iType == J || iType == Br);
-
     // Instruction Fetch -- request instruction from iMem and update PC
 	// fetch, decode, reg read stage
 	rule doFetch(csrf.started);
@@ -118,7 +122,7 @@ module mkProc(Proc);
             // decode
             DecodedInst dInst = decode(inst);
 
-            let ppc = isBranch(dInst.iType)? bht.predPc(f2d.pc, f2d.pc + fromMaybe(?, dInst.imm)) : f2d.predPc;
+            let ppc = dInst.iType == Br? bht.predPc(f2d.pc, f2d.pc + fromMaybe(?, dInst.imm)) : f2d.predPc;
             
             if ( f2d.predPc != ppc ) begin
                 decEpoch <= !decEpoch;
@@ -191,15 +195,16 @@ module mkProc(Proc);
             newEInst = Valid(eInst);
             
             if (eInst.mispredict) begin
-                $display("Execute finds misprediction: PC = %x", r2e.pc);
-                pcReg[2] <= eInst.addr;
+                let jump = eInst.iType == J || eInst.iType == Jr || eInst.iType == Br;
+                let ppc = jump? eInst.addr : r2e.pc+4;
+                pcReg[2] <= ppc;
     			exeEpoch <= !exeEpoch; // flip epoch
 	    		btb.update(r2e.pc, eInst.addr); // train BTB
+                $display("Execute finds misprediction: PC = %x", r2e.pc);
             end else begin
                 $display("Execute: PC = %x", r2e.pc);
             end
-
-            if ( isBranch(eInst.iType)) bht.update(r2e.pc, eInst.brTaken);
+            if ( eInst.iType == Br ) bht.update(r2e.pc, eInst.brTaken);
         end
         let e2m = Execute2Memory{
                 pc: r2e.pc,
