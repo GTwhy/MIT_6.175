@@ -79,14 +79,20 @@ module mkProc(Proc);
 	// Fifo#(2, Execute2Memory) e2mFifo <- mkBypassFifo;
 	// Fifo#(2, Memory2WriteBack) m2wFifo <- mkBypassFifo;
 
-	Fifo#(2, Fetch2Decode) f2dFifo <- mkCFFifo;
-	Fifo#(2, Decode2Register) d2rFifo <- mkCFFifo;
-	Fifo#(2, Register2Execute) r2eFifo <- mkCFFifo;
-	Fifo#(2, Execute2Memory) e2mFifo <- mkCFFifo;
-	Fifo#(2, Memory2WriteBack) m2wFifo <- mkCFFifo;
+	// Fifo#(2, Fetch2Decode) f2dFifo <- mkCFFifo;
+	// Fifo#(2, Decode2Register) d2rFifo <- mkCFFifo;
+	// Fifo#(2, Register2Execute) r2eFifo <- mkCFFifo;
+	// Fifo#(2, Execute2Memory) e2mFifo <- mkCFFifo;
+	// Fifo#(2, Memory2WriteBack) m2wFifo <- mkCFFifo;
+
+	Fifo#(2, Fetch2Decode) f2dFifo <- mkPipelineFifo;
+	Fifo#(2, Decode2Register) d2rFifo <- mkPipelineFifo;
+	Fifo#(2, Register2Execute) r2eFifo <- mkPipelineFifo;
+	Fifo#(2, Execute2Memory) e2mFifo <- mkPipelineFifo;
+	Fifo#(2, Memory2WriteBack) m2wFifo <- mkPipelineFifo;
 
     Bool memReady = iMem.init.done && dMem.init.done;
-    
+
     // Instruction Fetch -- request instruction from iMem and update PC
 	// fetch, decode, reg read stage
 	rule doFetch(csrf.started);
@@ -179,10 +185,8 @@ module mkProc(Proc);
             if (eInst.mispredict) begin
                 $display("Execute finds misprediction: PC = %x", r2e.pc);
                 let jump = eInst.iType == J || eInst.iType == Jr || eInst.iType == Br;
-                let ppc = jump? eInst.addr : r2e.pc+4;
-                pcReg[1] <= ppc;
-    			exeEpoch <= !exeEpoch; // flip epoch
-	    		btb.update(r2e.pc, eInst.addr); // train BTB
+                let npc = jump? eInst.addr : r2e.pc+4;
+                exeRedirect[0] <= Valid(ExeRedirect{pc: r2e.pc, nextPc: npc});
             end else begin
                 $display("Execute: PC = %x", r2e.pc);
             end
@@ -242,6 +246,19 @@ module mkProc(Proc);
         sb.remove;
 	endrule
 
+    
+    (* fire_when_enabled *)
+    (* no_implicit_conditions *)
+    rule canonicalizeRedirect(csrf.started);
+        if(exeRedirect[1] matches tagged Valid .r) begin
+            pcReg[1] <= r.nextPc;
+            exeEpoch <= !exeEpoch;
+            btb.update(r.pc,r.nextPc);
+            $display("Fetch: Mispredict, redirected by Execute");
+        end
+        exeRedirect[1]<=Invalid;
+    endrule
+
     method ActionValue#(CpuToHostData) cpuToHost if(csrf.started);
         let ret <- csrf.cpuToHost;
         return ret;
@@ -256,4 +273,3 @@ module mkProc(Proc);
 	interface iMemInit = iMem.init;
     interface dMemInit = dMem.init;
 endmodule
-

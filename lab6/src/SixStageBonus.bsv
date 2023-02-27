@@ -59,15 +59,24 @@ typedef struct {
 typedef struct {
 	Addr pc;
 	Addr nextPc;
+    Bool isBranch;
+    Bool isTaken;
 } ExeRedirect deriving (Bits, Eq);
+
+typedef struct {
+	Addr nextPc;
+} DecRedirect deriving (Bits, Eq);
+
+
+typedef struct {
+	Addr nextPc;
+} RegRedirect deriving (Bits, Eq);
 
 (* synthesize *)
 module mkProc(Proc);
-    Ehr#(4, Addr) pcReg <- mkEhr(?);
+    Ehr#(2, Addr) pcReg <- mkEhr(?);
     RFile            rf <- mkBypassRFile;
 	Scoreboard#(6)   sb <- mkPipelineScoreboard;
-    // RFile            rf <- mkBypassRFile;
-	// Scoreboard#(6)   sb <- mkPipelineScoreboard;
 	FPGAMemory     iMem <- mkFPGAMemory;
     FPGAMemory     dMem <- mkFPGAMemory;
     CsrFile        csrf <- mkCsrFile;
@@ -80,7 +89,9 @@ module mkProc(Proc);
     Reg#(Bool) regEpoch <- mkReg(False);
 
 	// EHR for redirection
-	Ehr#(3, Maybe#(ExeRedirect)) exeRedirect <- mkEhr(Invalid);
+	Ehr#(2, Maybe#(ExeRedirect)) exeRedirect <- mkEhr(Invalid);
+	Ehr#(2, Maybe#(DecRedirect)) decRedirect <- mkEhr(Invalid);
+	Ehr#(2, Maybe#(RegRedirect)) regRedirect <- mkEhr(Invalid);
 
 	// Fifo#(2, Fetch2Decode) f2dFifo <- mkBypassFifo;
 	// Fifo#(2, Decode2Register) d2rFifo <- mkBypassFifo;
@@ -88,11 +99,17 @@ module mkProc(Proc);
 	// Fifo#(2, Execute2Memory) e2mFifo <- mkBypassFifo;
 	// Fifo#(2, Memory2WriteBack) m2wFifo <- mkBypassFifo;
 
-	Fifo#(2, Fetch2Decode) f2dFifo <- mkCFFifo;
-	Fifo#(2, Decode2Register) d2rFifo <- mkCFFifo;
-	Fifo#(2, Register2Execute) r2eFifo <- mkCFFifo;
-	Fifo#(2, Execute2Memory) e2mFifo <- mkCFFifo;
-	Fifo#(2, Memory2WriteBack) m2wFifo <- mkCFFifo;
+	// Fifo#(2, Fetch2Decode) f2dFifo <- mkCFFifo;
+	// Fifo#(2, Decode2Register) d2rFifo <- mkCFFifo;
+	// Fifo#(2, Register2Execute) r2eFifo <- mkCFFifo;
+	// Fifo#(2, Execute2Memory) e2mFifo <- mkCFFifo;
+	// Fifo#(2, Memory2WriteBack) m2wFifo <- mkCFFifo;
+
+	Fifo#(2, Fetch2Decode) f2dFifo <- mkPipelineFifo;
+	Fifo#(2, Decode2Register) d2rFifo <- mkPipelineFifo;
+	Fifo#(2, Register2Execute) r2eFifo <- mkPipelineFifo;
+	Fifo#(2, Execute2Memory) e2mFifo <- mkPipelineFifo;
+	Fifo#(2, Memory2WriteBack) m2wFifo <- mkPipelineFifo;
 
     Bool memReady = iMem.init.done && dMem.init.done;
     
@@ -133,8 +150,7 @@ module mkProc(Proc);
             let ppc = dInst.iType == Br? bht.predPc(f2d.pc, f2d.pc + fromMaybe(?, dInst.imm)) : f2d.predPc;
             
             if ( f2d.predPc != ppc ) begin
-                decEpoch <= !decEpoch;
-                pcReg[1] <= ppc;
+                decRedirect[0] <= Valid(DecRedirect{nextPc: ppc});
                 $display("doDecode and PC redirect by BHT: PC = %x, PPC = %x, inst = %x, expanded = ", f2d.pc, ppc, inst, showInst(inst));
             end
             
@@ -169,8 +185,7 @@ module mkProc(Proc);
             let ppc = (d2r.dInst.iType == Jr)? bht.predPc(d2r.pc, getTargetPc(rVal1, dInst.imm)) : d2r.predPc;
 
             if ( ppc != d2r.predPc ) begin
-                regEpoch <= !regEpoch;
-                pcReg[2] <= ppc;
+                regRedirect[0] <= Valid(RegRedirect{nextPc: ppc});
                 $display("RegisterFetch and PC redirect by BHT: PC = %x, PPC = %x", d2r.pc, ppc);
             end
 
@@ -219,15 +234,13 @@ module mkProc(Proc);
             if (eInst.mispredict) begin
                 let jump = eInst.iType == J || eInst.iType == Jr || eInst.iType == Br;
                 let npc = jump? eInst.addr : r2e.pc+4;
-                pcReg[3] <= npc;
-    			exeEpoch <= !exeEpoch; // flip epoch
-	    		btb.update(r2e.pc, eInst.addr); // train BTB
+                // exeRedirect[0] <= Valid(ExeRedirect{pc: r2e.pc, nextPc: npc});
+                let isBranch = eInst.iType == Br;
+                exeRedirect[0] <= Valid(ExeRedirect{pc: r2e.pc, nextPc: npc, isBranch: isBranch, isTaken: eInst.brTaken});
                 $display("Execute finds misprediction: PC = %x, misPC = %x, nextPC = %x", r2e.pc, r2e.predPc, npc);
             end else begin
                 $display("Execute: PC = %x", r2e.pc);
             end
-
-            if ( eInst.iType == Br) bht.update(r2e.pc, eInst.brTaken);
         end
         let e2m = Execute2Memory{
                 pc: r2e.pc,
@@ -283,6 +296,28 @@ module mkProc(Proc);
         // remove from scoreboard
         sb.remove;
 	endrule
+
+    (* fire_when_enabled *)
+    (* no_implicit_conditions *)
+    rule canonicalizeRedirect(csrf.started);
+
+        if ( exeRedirect[1] matches tagged Valid .r ) begin
+            pcReg[1] <= r.nextPc;
+            exeEpoch <= !exeEpoch;
+            btb.update(r.pc,r.nextPc);
+            if ( r.isBranch ) bht.update(r.pc, r.isTaken);
+        end else if ( decRedirect[1] matches tagged Valid .r ) begin
+            pcReg[1] <= r.nextPc;
+            decEpoch <= !decEpoch;
+        end else if ( regRedirect[1] matches tagged Valid .r ) begin
+            pcReg[1] <= r.nextPc;
+            regEpoch <= !regEpoch;
+        end
+
+        exeRedirect[1]<=Invalid;
+        decRedirect[1]<=Invalid;
+        regRedirect[1]<=Invalid;
+    endrule
 
     method ActionValue#(CpuToHostData) cpuToHost if(csrf.started);
         let ret <- csrf.cpuToHost;
