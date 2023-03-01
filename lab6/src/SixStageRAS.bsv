@@ -134,7 +134,7 @@ module mkProc(Proc);
 
     function Bool isFunRet(Data inst);
         let rd = inst[11:7];
-        let rs1 = inst[11:7];
+        let rs1 = inst[19:15];
         let x0 = 5'b00000;
         let x1 = 5'b00001;
         return rd == x0 && rs1 == x1;
