@@ -108,11 +108,17 @@ module mkProc(Proc);
 	// Fifo#(2, Execute2Memory) e2mFifo <- mkCFFifo;
 	// Fifo#(2, Memory2WriteBack) m2wFifo <- mkCFFifo;
 
-	Fifo#(2, Fetch2Decode) f2dFifo <- mkPipelineFifo;
-	Fifo#(2, Decode2Register) d2rFifo <- mkPipelineFifo;
-	Fifo#(2, Register2Execute) r2eFifo <- mkPipelineFifo;
-	Fifo#(2, Execute2Memory) e2mFifo <- mkPipelineFifo;
-	Fifo#(2, Memory2WriteBack) m2wFifo <- mkPipelineFifo;
+	// Fifo#(2, Fetch2Decode) f2dFifo <- mkPipelineFifo;
+	// Fifo#(2, Decode2Register) d2rFifo <- mkPipelineFifo;
+	// Fifo#(2, Register2Execute) r2eFifo <- mkPipelineFifo;
+	// Fifo#(2, Execute2Memory) e2mFifo <- mkPipelineFifo;
+	// Fifo#(2, Memory2WriteBack) m2wFifo <- mkPipelineFifo;
+
+    Fifo#(1, Fetch2Decode) f2dFifo <- mkPipelineFifo;
+	Fifo#(1, Decode2Register) d2rFifo <- mkPipelineFifo;
+	Fifo#(1, Register2Execute) r2eFifo <- mkPipelineFifo;
+	Fifo#(1, Execute2Memory) e2mFifo <- mkPipelineFifo;
+	Fifo#(1, Memory2WriteBack) m2wFifo <- mkPipelineFifo;
 
     Bool memReady = iMem.init.done && dMem.init.done;
     
@@ -212,7 +218,6 @@ module mkProc(Proc);
 			$display("Register Fetch and killed inst with wrong epoch: PC = %x", d2r.pc);
         end else begin
             let ppc = (d2r.dInst.iType == Jr)? bht.predPc(d2r.pc, getTargetPc(rVal1, dInst.imm)) : d2r.predPc;
-
             if ( ppc != d2r.predPc ) begin
                 regRedirect[0] <= Valid(RegRedirect{nextPc: ppc});
                 $display("RegisterFetch and PC redirect by BHT: PC = %x, PPC = %x", d2r.pc, ppc);
@@ -335,17 +340,17 @@ module mkProc(Proc);
             exeEpoch <= !exeEpoch;
             btb.update(r.pc,r.nextPc);
             if ( r.isBranch ) bht.update(r.pc, r.isTaken);
-        end else if ( decRedirect[1] matches tagged Valid .r ) begin
-            pcReg[1] <= r.nextPc;
-            decEpoch <= !decEpoch;
         end else if ( regRedirect[1] matches tagged Valid .r ) begin
             pcReg[1] <= r.nextPc;
             regEpoch <= !regEpoch;
-        end
+        end else if ( decRedirect[1] matches tagged Valid .r ) begin
+            pcReg[1] <= r.nextPc;
+            decEpoch <= !decEpoch;
+        end 
 
-        exeRedirect[1]<=Invalid;
-        decRedirect[1]<=Invalid;
-        regRedirect[1]<=Invalid;
+        exeRedirect[1] <= Invalid;
+        decRedirect[1] <= Invalid;
+        regRedirect[1] <= Invalid;
     endrule
 
     method ActionValue#(CpuToHostData) cpuToHost if(csrf.started);

@@ -96,11 +96,17 @@ module mkProc(Proc);
 	// Fifo#(2, Execute2Memory) e2mFifo <- mkCFFifo;
 	// Fifo#(2, Memory2WriteBack) m2wFifo <- mkCFFifo;
 
-	Fifo#(2, Fetch2Decode) f2dFifo <- mkPipelineFifo;
-	Fifo#(2, Decode2Register) d2rFifo <- mkPipelineFifo;
-	Fifo#(2, Register2Execute) r2eFifo <- mkPipelineFifo;
-	Fifo#(2, Execute2Memory) e2mFifo <- mkPipelineFifo;
-	Fifo#(2, Memory2WriteBack) m2wFifo <- mkPipelineFifo;
+	// Fifo#(2, Fetch2Decode) f2dFifo <- mkPipelineFifo;
+	// Fifo#(2, Decode2Register) d2rFifo <- mkPipelineFifo;
+	// Fifo#(2, Register2Execute) r2eFifo <- mkPipelineFifo;
+	// Fifo#(2, Execute2Memory) e2mFifo <- mkPipelineFifo;
+	// Fifo#(2, Memory2WriteBack) m2wFifo <- mkPipelineFifo;
+
+	Fifo#(1, Fetch2Decode) f2dFifo <- mkPipelineFifo;
+	Fifo#(1, Decode2Register) d2rFifo <- mkPipelineFifo;
+	Fifo#(1, Register2Execute) r2eFifo <- mkPipelineFifo;
+	Fifo#(1, Execute2Memory) e2mFifo <- mkPipelineFifo;
+	Fifo#(1, Memory2WriteBack) m2wFifo <- mkPipelineFifo;
 
     Bool memReady = iMem.init.done && dMem.init.done;
     
