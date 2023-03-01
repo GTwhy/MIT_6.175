@@ -1,57 +1,25 @@
 `include "ConnectalProjectConfig.bsv"
 
 import ProcTypes::*;
-
-`ifdef ONECYCLE 
-import OneCycle::*;
-`endif
-
-`ifdef TWOCYCLE
-import TwoCycle::*;
-`endif
-
-`ifdef FOURCYCLE
-import FourCycle::*;
-`endif
-
-`ifdef TWOSTAGE 
-import TwoStage::*;
-`endif
-
-`ifdef TWOSTAGEEXE
-import TwoStageExecuteFirst::*;
-`endif
-
-`ifdef TWOSTAGEREDIR
-import TwoStageRedir::*;
-`endif
-
-`ifdef TWOSTAGEBTB 
-import TwoStageBTB::*;
-`endif
-
-`ifdef SIXSTAGE 
-import SixStage::*;
-`endif
-
-`ifdef SIXSTAGEBHT
-import SixStageBHT::*;
-`endif
-
-`ifdef SIXSTAGERAS
-import SixStageRAS::*;
-`endif
-
-`ifdef SIXSTAGEBONUS
-import SixStageBonus::*;
-`endif
-
+import SimMem::*;
+import Fifo::*;
+import MemUtil::*;
 import Ifc::*;
 import ProcTypes::*;
 import Types::*;
 import Ehr::*;
-import CMemTypes::*;
+import MemTypes::*;
+import Memory::*;
 import GetPut::*;
+import ClientServer::*;
+
+`ifdef WITHOUTCACHE
+import WithoutCache::*;
+`endif
+
+`ifdef WITHCACHE
+import WithCache::*;
+`endif
 
 // Connectal imports
 import HostInterface::*;
@@ -75,7 +43,12 @@ module mkConnectalWrapper#(HostInterface host, ConnectalProcIndication ind)(Conn
         if (resetCnt == 3) isResetting <= False;
     endrule
 
-    Proc riscv_processor <- mkProc(reset_by my_rst.new_rst);
+    Fifo#(2, DDR3_Req)  ddr3ReqFifo <- mkCFFifo();
+    Fifo#(2, DDR3_Resp) ddr3RespFifo <- mkCFFifo();
+    DDR3_Client ddrclient = toGPClient(ddr3ReqFifo, ddr3RespFifo);
+    mkSimMem(ddrclient);
+
+    Proc riscv_processor <- mkProc(ddr3ReqFifo, ddr3RespFifo, reset_by my_rst.new_rst);
 
     rule relayMessage;
         let mess <- riscv_processor.cpuToHost();
@@ -98,14 +71,16 @@ module mkConnectalWrapper#(HostInterface host, ConnectalProcIndication ind)(Conn
     interface ConnectalMemoryInitialization initProc;
         method Action done() if (!isResetting&&ready);
             $display("Done memory initialization");
-            riscv_processor.iMemInit.request.put(tagged InitDone);
-            riscv_processor.dMemInit.request.put(tagged InitDone);
         endmethod
         method Action request(Bit#(32) addr, Bit#(32) data) if (!isResetting&&ready);
             $display("Request %x %x",addr, data);
             ind.wroteWord(0);
-            riscv_processor.iMemInit.request.put(tagged InitLoad (MemInitLoad {addr: addr, data: data}));
-            riscv_processor.dMemInit.request.put(tagged InitLoad (MemInitLoad {addr: addr, data: data}));
+            let res = toDDR3Req(MemReq{op:St, addr:addr , data:data});
+            $display("data",fshow(res.data));
+            $display("addr",fshow(res.address));
+            $display("byteen",fshow(res.byteen));
+            $display("writeen",fshow(res.write));
+            ddr3ReqFifo.enq(res);
         endmethod 
     endinterface
 

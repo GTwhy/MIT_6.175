@@ -1,6 +1,8 @@
+// Six stage
+
 import Types::*;
 import ProcTypes::*;
-import CMemTypes::*;
+import MemTypes::*;
 import MemInit::*;
 import RFile::*;
 import IMemory::*;
@@ -12,6 +14,9 @@ import Fifo::*;
 import Ehr::*;
 import Btb::*;
 import Scoreboard::*;
+import FPGAMemory::*;
+import DelayedMemory::*;
+import Bht::*;
 
 import Memory::*;
 import Cache::*;
@@ -22,19 +27,19 @@ import CacheTypes::*;
 import WideMemInit::*;
 import MemUtil::*;
 import Vector::*;
-
 // Data structure for Fetch to Execute stage
 typedef struct {
     Addr pc;
     Addr predPc;
-    Bool epoch;
+    Bool decEpoch;
+    Bool exeEpoch;
 } Fetch2Decode deriving (Bits, Eq);
 
 typedef struct {
     Addr pc;
     Addr predPc;
     DecodedInst dInst;
-    Bool epoch;
+    Bool exeEpoch;
 } Decode2Register deriving (Bits, Eq);
 
 typedef struct {
@@ -44,7 +49,7 @@ typedef struct {
     Data rVal1;
     Data rVal2;
     Data csrVal;
-    Bool epoch;
+    Bool exeEpoch;
 } Register2Execute deriving (Bits, Eq);
 
 typedef struct {
@@ -61,22 +66,30 @@ typedef struct {
 typedef struct {
 	Addr pc;
 	Addr nextPc;
+    Bool isBranch;
+    Bool isTaken;
 } ExeRedirect deriving (Bits, Eq);
 
-(* synthesize *)
-module mkProc#(Fifo#(2, DDR3_Req) ddr3ReqFifo, Fifo#(2, DDR3_Resp) ddr3RespFifo)(Proc);
+typedef struct {
+	Addr nextPc;
+} DecRedirect deriving (Bits, Eq);
 
+// (* synthesize *)
+module mkProc#(Fifo#(2, DDR3_Req) ddr3ReqFifo, Fifo#(2, DDR3_Resp) ddr3RespFifo)(Proc);
     Ehr#(2, Addr) pcReg <- mkEhr(?);
     RFile            rf <- mkBypassRFile;
 	Scoreboard#(6)   sb <- mkPipelineScoreboard;
     CsrFile        csrf <- mkCsrFile;
     Btb#(6)         btb <- mkBtb; // 64-entry BTB
+    BHT#(8)         bht <- mkBHT;
 
 	// global epoch for redirection from Execute stage
 	Reg#(Bool) exeEpoch <- mkReg(False);
+    Reg#(Bool) decEpoch <- mkReg(False);
 
 	// EHR for redirection
 	Ehr#(2, Maybe#(ExeRedirect)) exeRedirect <- mkEhr(Invalid);
+	Ehr#(2, Maybe#(DecRedirect)) decRedirect <- mkEhr(Invalid);
 
 	// Fifo#(2, Fetch2Decode) f2dFifo <- mkBypassFifo;
 	// Fifo#(2, Decode2Register) d2rFifo <- mkBypassFifo;
@@ -90,7 +103,13 @@ module mkProc#(Fifo#(2, DDR3_Req) ddr3ReqFifo, Fifo#(2, DDR3_Resp) ddr3RespFifo)
 	// Fifo#(2, Execute2Memory) e2mFifo <- mkCFFifo;
 	// Fifo#(2, Memory2WriteBack) m2wFifo <- mkCFFifo;
 
-    Fifo#(1, Fetch2Decode) f2dFifo <- mkPipelineFifo;
+	// Fifo#(2, Fetch2Decode) f2dFifo <- mkPipelineFifo;
+	// Fifo#(2, Decode2Register) d2rFifo <- mkPipelineFifo;
+	// Fifo#(2, Register2Execute) r2eFifo <- mkPipelineFifo;
+	// Fifo#(2, Execute2Memory) e2mFifo <- mkPipelineFifo;
+	// Fifo#(2, Memory2WriteBack) m2wFifo <- mkPipelineFifo;
+
+	Fifo#(1, Fetch2Decode) f2dFifo <- mkPipelineFifo;
 	Fifo#(1, Decode2Register) d2rFifo <- mkPipelineFifo;
 	Fifo#(1, Register2Execute) r2eFifo <- mkPipelineFifo;
 	Fifo#(1, Execute2Memory) e2mFifo <- mkPipelineFifo;
@@ -108,8 +127,7 @@ module mkProc#(Fifo#(2, DDR3_Req) ddr3ReqFifo, Fifo#(2, DDR3_Resp) ddr3RespFifo)
     // Data cache should use wideMems[0]
     Cache iMem <- mkTranslator(wideMems[1]);
     Cache dMem <- mkTranslator(wideMems[0]);
-
-
+    
     // Instruction Fetch -- request instruction from iMem and update PC
 	// fetch, decode, reg read stage
 	rule doFetch(csrf.started);
@@ -121,7 +139,8 @@ module mkProc#(Fifo#(2, DDR3_Req) ddr3ReqFifo, Fifo#(2, DDR3_Resp) ddr3RespFifo)
         let f2d = Fetch2Decode {
             pc: pcReg[0],
             predPc: predPc,
-            epoch: exeEpoch
+            decEpoch: decEpoch,
+            exeEpoch: exeEpoch
         };
         f2dFifo.enq(f2d);
         $display("doFetch: PC = %x", f2d.pc);
@@ -131,19 +150,32 @@ module mkProc#(Fifo#(2, DDR3_Req) ddr3ReqFifo, Fifo#(2, DDR3_Resp) ddr3RespFifo)
     rule doDecode(csrf.started);
         let f2d = f2dFifo.first;
         f2dFifo.deq;
-
+        
         let inst <- iMem.resp;
-		// decode
-		DecodedInst dInst = decode(inst);
 
-        let d2r = Decode2Register{
-            pc: f2d.pc,
-            predPc: f2d.predPc,
-            dInst: dInst,
-            epoch: f2d.epoch
-        };
-        d2rFifo.enq(d2r);
-        $display("doDecode: PC = %x, inst = %x, expanded = ", f2d.pc, inst, showInst(inst));
+        if ( f2d.decEpoch != decEpoch || f2d.exeEpoch != exeEpoch) begin
+            $display("doDecode and killed inst with wrong epoch: PC = %x, inst = %x, expanded = ", f2d.pc, inst, showInst(inst));
+        end else begin
+            // decode
+            DecodedInst dInst = decode(inst);
+
+            let ppc = dInst.iType == Br? bht.predPc(f2d.pc, f2d.pc + fromMaybe(?, dInst.imm)) : f2d.predPc;
+            
+            if ( f2d.predPc != ppc ) begin
+                decRedirect[0] <= Valid(DecRedirect{nextPc: ppc});
+                $display("doDecode and PC redirect by BHT: PC = %x, PPC = %x, inst = %x, expanded = ", f2d.pc, ppc, inst, showInst(inst));
+            end
+            
+            let d2r = Decode2Register{
+                pc: f2d.pc,
+                predPc: ppc,
+                dInst: dInst,
+                exeEpoch: f2d.exeEpoch
+            };
+
+            d2rFifo.enq(d2r);
+            $display("doDecode: PC = %x, inst = %x, expanded = ", f2d.pc, inst, showInst(inst));
+        end
     endrule
 
     // Register Fetch -- read from the register file
@@ -163,7 +195,7 @@ module mkProc#(Fifo#(2, DDR3_Req) ddr3ReqFifo, Fifo#(2, DDR3_Resp) ddr3RespFifo)
 			rVal1: rVal1,
 			rVal2: rVal2,
 			csrVal: csrVal,
-			epoch: d2r.epoch
+			exeEpoch: d2r.exeEpoch
 		};
 		// search scoreboard to determine stall
 		if(!sb.search1(dInst.src1) && !sb.search2(dInst.src2)) begin
@@ -184,9 +216,7 @@ module mkProc#(Fifo#(2, DDR3_Req) ddr3ReqFifo, Fifo#(2, DDR3_Resp) ddr3RespFifo)
 
         Maybe#(ExecInst) newEInst = Invalid;
 
-		if(r2e.epoch != exeEpoch) begin
-			// kill wrong-path inst, just deq sb
-			// sb.remove;
+		if(r2e.exeEpoch != exeEpoch) begin
 			$display("Execute: Kill instruction at pc: %x.\n", r2e.pc);
 		end else begin
 			// execute
@@ -200,13 +230,15 @@ module mkProc#(Fifo#(2, DDR3_Req) ddr3ReqFifo, Fifo#(2, DDR3_Resp) ddr3RespFifo)
             newEInst = Valid(eInst);
             
             if (eInst.mispredict) begin
-                $display("Execute finds misprediction: PC = %x", r2e.pc);
                 let jump = eInst.iType == J || eInst.iType == Jr || eInst.iType == Br;
                 let npc = jump? eInst.addr : r2e.pc+4;
-                exeRedirect[0] <= Valid(ExeRedirect{pc: r2e.pc, nextPc: npc});
+                let isBranch = eInst.iType == Br;
+                exeRedirect[0] <= Valid(ExeRedirect{pc: r2e.pc, nextPc: npc, isBranch: isBranch, isTaken: eInst.brTaken});
+                $display("Execute finds misprediction: PC = %x", r2e.pc);
             end else begin
                 $display("Execute: PC = %x", r2e.pc);
             end
+            // if ( eInst.iType == Br ) bht.update(r2e.pc, eInst.brTaken);
         end
         let e2m = Execute2Memory{
                 pc: r2e.pc,
@@ -263,24 +295,29 @@ module mkProc#(Fifo#(2, DDR3_Req) ddr3ReqFifo, Fifo#(2, DDR3_Resp) ddr3RespFifo)
         sb.remove;
 	endrule
 
-    
     (* fire_when_enabled *)
     (* no_implicit_conditions *)
     rule canonicalizeRedirect(csrf.started);
-        if(exeRedirect[1] matches tagged Valid .r) begin
+
+        if ( exeRedirect[1] matches tagged Valid .r ) begin
             pcReg[1] <= r.nextPc;
             exeEpoch <= !exeEpoch;
             btb.update(r.pc,r.nextPc);
-            $display("Fetch: Mispredict, redirected by Execute");
+            if ( r.isBranch ) bht.update(r.pc, r.isTaken);
+        end else if ( decRedirect[1] matches tagged Valid .r ) begin
+            pcReg[1] <= r.nextPc;
+            decEpoch <= !decEpoch;
         end
+
         exeRedirect[1]<=Invalid;
+        decRedirect[1]<=Invalid;
     endrule
 
-    
-    rule drainMemResponses( !csrf.started );
-        $display("drainMemResponses");
-        ddr3RespFifo.deq;
-    endrule
+    // some garbage may get into ddr3RespFifo during soft reset
+	// this rule drains all such garbage
+	rule drainMemResponses( !csrf.started );
+		ddr3RespFifo.deq;
+	endrule
 
     method ActionValue#(CpuToHostData) cpuToHost if(csrf.started);
         let ret <- csrf.cpuToHost;
@@ -288,7 +325,7 @@ module mkProc#(Fifo#(2, DDR3_Req) ddr3ReqFifo, Fifo#(2, DDR3_Resp) ddr3RespFifo)
     endmethod
 
     method Action hostToCpu(Bit#(32) startpc) if ( !csrf.started && memReady && !ddr3RespFifo.notEmpty );
-	$display("Start cpu");
+        $display("Start cpu");
         csrf.start(0); // only 1 core, id = 0
         pcReg[0] <= startpc;
     endmethod
