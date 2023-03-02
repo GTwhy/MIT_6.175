@@ -218,10 +218,6 @@ module mkProc(Proc);
 			$display("Register Fetch and killed inst with wrong epoch: PC = %x", d2r.pc);
         end else begin
             let ppc = (d2r.dInst.iType == Jr)? bht.predPc(d2r.pc, getTargetPc(rVal1, dInst.imm)) : d2r.predPc;
-            if ( ppc != d2r.predPc ) begin
-                regRedirect[0] <= Valid(RegRedirect{nextPc: ppc});
-                $display("RegisterFetch and PC redirect by BHT: PC = %x, PPC = %x", d2r.pc, ppc);
-            end
 
             let r2e = Register2Execute {
                 pc: d2r.pc,
@@ -232,8 +228,13 @@ module mkProc(Proc);
                 csrVal: csrVal,
                 exeEpoch: d2r.exeEpoch
             };
+            
             // search scoreboard to determine stall
             if(!sb.search1(dInst.src1) && !sb.search2(dInst.src2)) begin
+                if ( ppc != d2r.predPc ) begin
+                    regRedirect[0] <= Valid(RegRedirect{nextPc: ppc});
+                    $display("RegisterFetch and PC redirect by BHT: PC = %x, PPC = %x", d2r.pc, ppc);
+                end
                 // enq & update PC, sb
                 r2eFifo.enq(r2e);
                 sb.insert(dInst.dst);
