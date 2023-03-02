@@ -17,6 +17,7 @@ import Scoreboard::*;
 import FPGAMemory::*;
 import DelayedMemory::*;
 import Bht::*;
+import RAS::*;
 
 import Memory::*;
 import Cache::*;
@@ -27,12 +28,14 @@ import CacheTypes::*;
 import WideMemInit::*;
 import MemUtil::*;
 import Vector::*;
+
 // Data structure for Fetch to Execute stage
 typedef struct {
     Addr pc;
     Addr predPc;
     Bool decEpoch;
     Bool exeEpoch;
+    Bool regEpoch;
 } Fetch2Decode deriving (Bits, Eq);
 
 typedef struct {
@@ -40,6 +43,7 @@ typedef struct {
     Addr predPc;
     DecodedInst dInst;
     Bool exeEpoch;
+    Bool regEpoch;
 } Decode2Register deriving (Bits, Eq);
 
 typedef struct {
@@ -74,6 +78,12 @@ typedef struct {
 	Addr nextPc;
 } DecRedirect deriving (Bits, Eq);
 
+
+typedef struct {
+	Addr nextPc;
+} RegRedirect deriving (Bits, Eq);
+
+
 // (* synthesize *)
 module mkProc#(Fifo#(2, DDR3_Req) ddr3ReqFifo, Fifo#(2, DDR3_Resp) ddr3RespFifo)(Proc);
     Ehr#(2, Addr) pcReg <- mkEhr(?);
@@ -82,14 +92,17 @@ module mkProc#(Fifo#(2, DDR3_Req) ddr3ReqFifo, Fifo#(2, DDR3_Resp) ddr3RespFifo)
     CsrFile        csrf <- mkCsrFile;
     Btb#(6)         btb <- mkBtb; // 64-entry BTB
     BHT#(8)         bht <- mkBHT;
+    RAS#(8)         ras <- mkRAS;
 
 	// global epoch for redirection from Execute stage
 	Reg#(Bool) exeEpoch <- mkReg(False);
     Reg#(Bool) decEpoch <- mkReg(False);
+    Reg#(Bool) regEpoch <- mkReg(False);
 
 	// EHR for redirection
 	Ehr#(2, Maybe#(ExeRedirect)) exeRedirect <- mkEhr(Invalid);
 	Ehr#(2, Maybe#(DecRedirect)) decRedirect <- mkEhr(Invalid);
+	Ehr#(2, Maybe#(RegRedirect)) regRedirect <- mkEhr(Invalid);
 
 	// Fifo#(2, Fetch2Decode) f2dFifo <- mkBypassFifo;
 	// Fifo#(2, Decode2Register) d2rFifo <- mkBypassFifo;
@@ -114,6 +127,24 @@ module mkProc#(Fifo#(2, DDR3_Req) ddr3ReqFifo, Fifo#(2, DDR3_Resp) ddr3RespFifo)
 	Fifo#(1, Register2Execute) r2eFifo <- mkPipelineFifo;
 	Fifo#(1, Execute2Memory) e2mFifo <- mkPipelineFifo;
 	Fifo#(1, Memory2WriteBack) m2wFifo <- mkPipelineFifo;
+    
+    function Bool isBranch(IType iType) = (iType == J || iType == Br);
+
+    function Addr getTargetPc(Data val, Maybe#(Data) imm) = {truncateLSB(val + fromMaybe(?, imm)), 1'b0};
+    
+    function Bool isFunCall(Data inst);
+        let rd = inst[11:7];
+        let x1 = 5'b00001;
+        return rd == x1;
+    endfunction
+
+    function Bool isFunRet(Data inst);
+        let rd = inst[11:7];
+        let rs1 = inst[19:15];
+        let x0 = 5'b00000;
+        let x1 = 5'b00001;
+        return rd == x0 && rs1 == x1;
+    endfunction
 
     Bool memReady = True;
 
@@ -140,7 +171,8 @@ module mkProc#(Fifo#(2, DDR3_Req) ddr3ReqFifo, Fifo#(2, DDR3_Resp) ddr3RespFifo)
             pc: pcReg[0],
             predPc: predPc,
             decEpoch: decEpoch,
-            exeEpoch: exeEpoch
+            exeEpoch: exeEpoch,
+            regEpoch: regEpoch
         };
         f2dFifo.enq(f2d);
         $display("doFetch: PC = %x", f2d.pc);
@@ -153,24 +185,35 @@ module mkProc#(Fifo#(2, DDR3_Req) ddr3ReqFifo, Fifo#(2, DDR3_Resp) ddr3RespFifo)
         
         let inst <- iMem.resp;
 
-        if ( f2d.decEpoch != decEpoch || f2d.exeEpoch != exeEpoch) begin
+        if ( f2d.decEpoch != decEpoch || f2d.regEpoch != regEpoch || f2d.exeEpoch != exeEpoch) begin
             $display("doDecode and killed inst with wrong epoch: PC = %x, inst = %x, expanded = ", f2d.pc, inst, showInst(inst));
         end else begin
             // decode
             DecodedInst dInst = decode(inst);
 
-            let ppc = dInst.iType == Br? bht.predPc(f2d.pc, f2d.pc + fromMaybe(?, dInst.imm)) : f2d.predPc;
+            let ppc = (dInst.iType == Br)? bht.predPc(f2d.pc, f2d.pc + fromMaybe(?, dInst.imm)) : f2d.predPc;
             
+            if ( (dInst.iType == J || dInst.iType == Jr) && isFunCall(inst) ) begin
+                ras.push(f2d.pc+4);
+            end
+
+            if ( dInst.iType == Jr && isFunRet(inst) ) begin
+                ppc <- ras.pop;
+                $display("doDecode and PC redirect by RAS: PC = %x, PPC = %x, inst = %x, expanded = ", f2d.pc, ppc, inst, showInst(inst));
+            end
+                
+
             if ( f2d.predPc != ppc ) begin
                 decRedirect[0] <= Valid(DecRedirect{nextPc: ppc});
-                $display("doDecode and PC redirect by BHT: PC = %x, PPC = %x, inst = %x, expanded = ", f2d.pc, ppc, inst, showInst(inst));
+                $display("doDecode PC = %x, PPC = %x, inst = %x, expanded = ", f2d.pc, ppc, inst, showInst(inst));
             end
             
             let d2r = Decode2Register{
                 pc: f2d.pc,
                 predPc: ppc,
                 dInst: dInst,
-                exeEpoch: f2d.exeEpoch
+                exeEpoch: f2d.exeEpoch,
+                regEpoch: f2d.regEpoch
             };
 
             d2rFifo.enq(d2r);
@@ -188,25 +231,37 @@ module mkProc#(Fifo#(2, DDR3_Req) ddr3ReqFifo, Fifo#(2, DDR3_Resp) ddr3RespFifo)
 		Data rVal2 = rf.rd2(fromMaybe(?, dInst.src2));
 		Data csrVal = csrf.rd(fromMaybe(?, dInst.csr));
 
-		let r2e = Register2Execute {
-			pc: d2r.pc,
-			predPc: d2r.predPc,
-			dInst: d2r.dInst,
-			rVal1: rVal1,
-			rVal2: rVal2,
-			csrVal: csrVal,
-			exeEpoch: d2r.exeEpoch
-		};
-		// search scoreboard to determine stall
-		if(!sb.search1(dInst.src1) && !sb.search2(dInst.src2)) begin
-			// enq & update PC, sb
-			r2eFifo.enq(r2e);
-			sb.insert(dInst.dst);
+        if ( d2r.regEpoch != regEpoch || d2r.exeEpoch != exeEpoch ) begin
             d2rFifo.deq;
-			$display("Register Fetch: PC = %x", d2r.pc);
-		end else begin
-			$display("Register Fetch Stalled: PC = %x", d2r.pc);
-		end
+			$display("Register Fetch and killed inst with wrong epoch: PC = %x", d2r.pc);
+        end else begin
+            let ppc = (d2r.dInst.iType == Jr)? bht.predPc(d2r.pc, getTargetPc(rVal1, dInst.imm)) : d2r.predPc;
+
+            let r2e = Register2Execute {
+                pc: d2r.pc,
+                predPc: ppc,
+                dInst: d2r.dInst,
+                rVal1: rVal1,
+                rVal2: rVal2,
+                csrVal: csrVal,
+                exeEpoch: d2r.exeEpoch
+            };
+            
+            // search scoreboard to determine stall
+            if(!sb.search1(dInst.src1) && !sb.search2(dInst.src2)) begin
+                if ( ppc != d2r.predPc ) begin
+                    regRedirect[0] <= Valid(RegRedirect{nextPc: ppc});
+                    $display("RegisterFetch and PC redirect by BHT: PC = %x, PPC = %x", d2r.pc, ppc);
+                end
+                // enq & update PC, sb
+                r2eFifo.enq(r2e);
+                sb.insert(dInst.dst);
+                d2rFifo.deq;
+                $display("Register Fetch: PC = %x", d2r.pc);
+            end else begin
+                $display("Register Fetch Stalled: PC = %x", d2r.pc);
+            end
+        end
 	endrule
 
     // Execute -- execute the instruction and redirect the processor if necessary    
@@ -238,7 +293,7 @@ module mkProc#(Fifo#(2, DDR3_Req) ddr3ReqFifo, Fifo#(2, DDR3_Resp) ddr3RespFifo)
             end else begin
                 $display("Execute: PC = %x", r2e.pc);
             end
-            // if ( eInst.iType == Br ) bht.update(r2e.pc, eInst.brTaken);
+
         end
         let e2m = Execute2Memory{
                 pc: r2e.pc,
@@ -304,14 +359,19 @@ module mkProc#(Fifo#(2, DDR3_Req) ddr3ReqFifo, Fifo#(2, DDR3_Resp) ddr3RespFifo)
             exeEpoch <= !exeEpoch;
             btb.update(r.pc,r.nextPc);
             if ( r.isBranch ) bht.update(r.pc, r.isTaken);
+        end else if ( regRedirect[1] matches tagged Valid .r ) begin
+            pcReg[1] <= r.nextPc;
+            regEpoch <= !regEpoch;
         end else if ( decRedirect[1] matches tagged Valid .r ) begin
             pcReg[1] <= r.nextPc;
             decEpoch <= !decEpoch;
-        end
+        end 
 
-        exeRedirect[1]<=Invalid;
-        decRedirect[1]<=Invalid;
+        exeRedirect[1] <= Invalid;
+        decRedirect[1] <= Invalid;
+        regRedirect[1] <= Invalid;
     endrule
+
 
     // some garbage may get into ddr3RespFifo during soft reset
 	// this rule drains all such garbage
