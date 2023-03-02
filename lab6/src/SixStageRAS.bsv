@@ -74,6 +74,14 @@ typedef struct {
 } RegRedirect deriving (Bits, Eq);
 
 
+typedef struct {
+	Addr pc;
+	Addr nextPc;
+    Bool isBranch;
+    Bool isTaken;
+} BxtUpdate deriving (Bits, Eq);
+
+
 (* synthesize *)
 module mkProc(Proc);
     Ehr#(2, Addr) pcReg <- mkEhr(?);
@@ -125,6 +133,8 @@ module mkProc(Proc);
     function Bool isBranch(IType iType) = (iType == J || iType == Br);
 
     function Addr getTargetPc(Data val, Maybe#(Data) imm) = {truncateLSB(val + fromMaybe(?, imm)), 1'b0};
+    
+    Ehr#(2, Maybe#(BxtUpdate)) bxtUpdate <- mkEhr(Invalid);
 
     function Bool isFunCall(Data inst);
         let rd = inst[11:7];
@@ -266,17 +276,20 @@ module mkProc(Proc);
 
             newEInst = Valid(eInst);
             
+            let jump = eInst.iType == J || eInst.iType == Jr || eInst.iType == Br;
+            let npc = jump? eInst.addr : r2e.pc+4;
+            let isBranch = eInst.iType == Br;
+
+            bxtUpdate[0] <= Valid(BxtUpdate{pc: r2e.pc, nextPc: npc, isBranch: isBranch, isTaken: eInst.brTaken});
+            
             if (eInst.mispredict) begin
-                let jump = eInst.iType == J || eInst.iType == Jr || eInst.iType == Br;
-                let npc = jump? eInst.addr : r2e.pc+4;
-                let isBranch = eInst.iType == Br;
                 exeRedirect[0] <= Valid(ExeRedirect{pc: r2e.pc, nextPc: npc, isBranch: isBranch, isTaken: eInst.brTaken});
-                $display("Execute finds misprediction: PC = %x", r2e.pc);
+                $display("Execute finds misprediction: PC = %x, misPC = %x, nextPC = %x", r2e.pc, r2e.predPc, npc);
             end else begin
                 $display("Execute: PC = %x", r2e.pc);
             end
-
         end
+
         let e2m = Execute2Memory{
                 pc: r2e.pc,
                 eInst: newEInst
@@ -336,11 +349,16 @@ module mkProc(Proc);
     (* no_implicit_conditions *)
     rule canonicalizeRedirect(csrf.started);
 
+        if ( bxtUpdate[1] matches tagged Valid .r ) begin
+            btb.update(r.pc, r.nextPc);
+            if ( r.isBranch ) bht.update(r.pc, r.isTaken);
+        end
+
         if ( exeRedirect[1] matches tagged Valid .r ) begin
             pcReg[1] <= r.nextPc;
             exeEpoch <= !exeEpoch;
-            btb.update(r.pc,r.nextPc);
-            if ( r.isBranch ) bht.update(r.pc, r.isTaken);
+            // btb.update(r.pc,r.nextPc);
+            // if ( r.isBranch ) bht.update(r.pc, r.isTaken);
         end else if ( regRedirect[1] matches tagged Valid .r ) begin
             pcReg[1] <= r.nextPc;
             regEpoch <= !regEpoch;
